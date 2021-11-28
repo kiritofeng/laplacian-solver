@@ -21,14 +21,17 @@
  */
 
 namespace solve_sim_walk {
-  const size_t GE_LIMIT = 1100;
+  const size_t GE_LIMIT = 1500;
   const size_t RANDOM_WALK_ATTEMPTS = 10;
   const size_t RANDOM_WALK_ATTEMPT_LENGTH = 30;
-  const double RHO_ADJUSTMENT_FACTOR = 0.01;
+  const double RHO_ADJUSTMENT_FACTOR = 0.1;
 
   template<typename T>
   std::tuple<bool, size_t, T> sim_random_walk(
       const Graph<T> &G, size_t u, std::vector<bool> &C, size_t max_len=UINT_MAX);
+
+  template<typename T>
+  std::vector<T> solve_iterative(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, size_t iterations);
 
   template<typename T>
   std::vector<T> solve(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, bool normalize=true);
@@ -63,6 +66,34 @@ namespace solve_sim_walk {
     } else {
       return std::make_tuple(true, u, dist);
     }
+  }
+
+  template<typename T>
+  std::vector<T> solve_iterative(size_t n, const Graph<T> &G, std::vector<T> &b,
+      const T &eps, size_t iterations) {
+    std::vector<T> x = solve(n, G, b, eps, 1);
+    for (size_t i = 0; i < iterations; ++i) {
+      std::vector<T> x_diff(n);
+      T max_diff = T(0);
+      for (size_t u = 0; u < n; ++u) {
+        x_diff[u] = b[u];
+        T weighted_degree{0};
+        for (auto e : G.neighbours(u)) {
+          x_diff[u] += b[e.first] * e.second;
+          weighted_degree += e.second;
+        }
+        x_diff[u] -= b[u] * weighted_degree;
+        max_diff = std::max(std::abs(x_diff[u]), max_diff);
+      }
+      if (max_diff < eps) {
+        break;
+      }
+      std::vector<T> x_delta = solve(n, G, x_diff, eps, 1);
+      for (size_t j = 0; j < n; ++j) {
+        x[j] += x_delta[j];
+      }
+    }
+    return x;
   }
 
   template<typename T>
@@ -125,25 +156,14 @@ namespace solve_sim_walk {
       }
     }
     std::sort(C.begin(), C.end());
-    std::cerr << "|C|/|V| = " << 1.0 * C.size() / n << std::endl;
-    // I is the set of now isolated nodes, F is the complement of C
-    std::vector<size_t> I, F;
+    // std::cerr << "|C|/|V| = " << 1.0 * C.size() / n << std::endl;
+    // F is the remainder
+    std::vector<size_t> F;
     for (size_t i = 0; i < n; ++i) {
       if (in_C[i]) {
         continue;
       }
-      // check if the node is now isolated
-      bool isolated = true;
-      for (auto e : G.neighbours(i)) {
-        if (!in_C[e.first]) {
-          isolated = false;
-        }
-      }
-      if (isolated) {
-        I.push_back(i);
-      } else {
-        F.push_back(i);
-      }
+      F.push_back(i);
     }
     std::vector<size_t> compression_map(n, n + 1);
     for (size_t i = 0; i < C.size(); ++i) {
@@ -190,31 +210,17 @@ namespace solve_sim_walk {
     for (size_t i = 0; i < C.size(); ++i) {
       solved_x[C[i]] = solved_C_x[i];
     }
-    // compute the isolated ones
-    for (size_t i : I) {
-      for (auto e : G.neighbours(i)) {
-        size_t v = e.first;
-        T w = e.second;
-        solved_x[i] += w * b[v];
-      }
-    }
     // solve the remainder
     std::vector<T> F_b(F.size());
-    Graph<T> H2;
     for (size_t f : F) {
-      for (auto e : G.neighbours(f)) {
-        size_t v = e.first;
-        T w = e.second;
-        if (in_C[v]) {
-          F_b[compression_map[f]] += w * b[v];
-        } else {
-          H2.add_edge(compression_map[f], compression_map[v], w);
-        }
+      for (size_t i = 0; i < rho; ++i) {
+        solved_x[f] += solved_x[std::get<1>(sim_random_walk(G, f, in_C))] / rho;
       }
-    }
-    auto solved_F_x = solve(F.size(), H2, F_b, eps, false);
-    for (size_t i = 0; i < F.size(); ++i) {
-      solved_x[F[i]] = solved_F_x[i];
+      T weighted_degree(0);
+      for (auto e : G.neighbours(f)) {
+        weighted_degree += e.second;
+      }
+      solved_x[f] += b[f] / weighted_degree;
     }
     return solved_x;
   }
