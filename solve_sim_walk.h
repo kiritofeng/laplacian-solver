@@ -4,9 +4,13 @@
 #include <algorithm>
 #include <cassert>
 #include <climits>
+#include <iostream>
 #include <random>
+#include <set>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 #include "graph.h"
 
@@ -17,11 +21,13 @@
  */
 
 namespace solve_sim_walk {
-  const size_t GE_LIMIT = 100;
+  const size_t GE_LIMIT = 1100;
   const size_t RANDOM_WALK_ATTEMPTS = 10;
+  const size_t RANDOM_WALK_ATTEMPT_LENGTH = 30;
+  const double RHO_ADJUSTMENT_FACTOR = 0.01;
 
   template<typename T>
-  std::vector<std::pair<size_t, T>> sim_random_walk(
+  std::tuple<bool, size_t, T> sim_random_walk(
       const Graph<T> &G, size_t u, std::vector<bool> &C, size_t max_len=UINT_MAX);
 
   template<typename T>
@@ -35,25 +41,27 @@ namespace solve_sim_walk {
   std::vector<T> solve_gaussian(size_t n, const Graph<T> &G, const std::vector<T> &b, const T &eps);
 
   template<typename T>
-  std::vector<std::pair<size_t, T>> sim_random_walk(
+  std::tuple<bool, size_t, T> sim_random_walk(
       const Graph<T> &G, size_t u, std::vector<bool> &C, size_t max_len) {
-    std::mt19937 gen;
+    static std::mt19937 gen{0xdeadbeef};
 
     assert(G.deg(u) > 0);
-    std::vector<std::pair<size_t, T>> walk;
-    T len = T(0);
-    walk.emplace_back(u, len);
-    while (!C[u] && walk.size() < max_len) {
+    T dist = T(0);
+    size_t len = 0;
+    while (!C[u] && len < max_len) {
       size_t idx = std::uniform_int_distribution<size_t>(0, G.deg(u) - 1)(gen);
-      std::tie(u, len) = *G.neighbours(u).find_by_order(idx);
-      walk.emplace_back(u, len);
+
+      T weight;
+      std::tie(u, weight) = *G.neighbours(u).find_by_order(idx);
+
+      dist += 1 / weight;
+      len += 1;
     }
 
-    if (!C[walk.back().first]) {
-      C[walk.back().first] = true;
-      return std::vector<std::pair<size_t, T>>();
+    if (!C[u]) {
+      return std::make_tuple(false, 0, T(0));
     } else {
-      return walk;
+      return std::make_tuple(true, u, dist);
     }
   }
 
@@ -78,41 +86,63 @@ namespace solve_sim_walk {
     return x;
   }
 
+  std::vector<size_t> sample(size_t n, size_t k) {
+    static std::mt19937 gen{0xdeadbeef};
+    std::vector<size_t> vals(n);
+    for (size_t i = 0;i < n; ++i) {
+      vals[i] = i;
+    }
+    std::shuffle(vals.begin(), vals.end(), gen);
+    return std::vector<size_t>(vals.begin(), vals.begin() + k);
+  }
 
   template<typename T>
   std::vector<T> solve_vertex_elimination(
       size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps) {
-    T rho = 1 / (eps * eps);
+
+    T rho = RHO_ADJUSTMENT_FACTOR / (eps * eps);
     Graph<T> H1;
     std::vector<T> b2;
     std::vector<bool> in_C(n, false);
-    std::vector<size_t> C, F;
-    // first determine C by doing random walks for the edges
+    // let C be a random sample of 10% of vertices
+    std::vector<size_t> C = sample(n, n / 10);
+    for (size_t c : C) {
+      in_C[c] = 1;
+    }
     for (auto e : G.edges()) {
       if (in_C[e.u]) {
         continue;
       }
       size_t cnt = 0;
       for (size_t i = 0; i < RANDOM_WALK_ATTEMPTS; ++i) {
-        sim_random_walk(G, e.u, in_C, 30);
-        if (in_C[e.u]) {
+        if (!std::get<0>(sim_random_walk(G, e.u, in_C, RANDOM_WALK_ATTEMPT_LENGTH))) {
           cnt += 1;
-          in_C[e.u] = false;
         }
       }
-      if (2 * cnt >= RANDOM_WALK_ATTEMPTS) {
+      if (cnt / RANDOM_WALK_ATTEMPTS >= 0.9) {
         in_C[e.u] = true;
         C.push_back(e.u);
       }
     }
     std::sort(C.begin(), C.end());
-    // F is the complement of C
-    for (size_t i = 0, j = 0; j < n; ++j) {
-      while (i < C.size() && C[i] < j) {
-        ++i;
+    std::cerr << "|C|/|V| = " << 1.0 * C.size() / n << std::endl;
+    // I is the set of now isolated nodes, F is the complement of C
+    std::vector<size_t> I, F;
+    for (size_t i = 0; i < n; ++i) {
+      if (in_C[i]) {
+        continue;
       }
-      if (C[i] != j) {
-        F.push_back(j);
+      // check if the node is now isolated
+      bool isolated = true;
+      for (auto e : G.neighbours(i)) {
+        if (!in_C[e.first]) {
+          isolated = false;
+        }
+      }
+      if (isolated) {
+        I.push_back(i);
+      } else {
+        F.push_back(i);
       }
     }
     std::vector<size_t> compression_map(n, n + 1);
@@ -128,20 +158,18 @@ namespace solve_sim_walk {
       }
       for (size_t i = 0; i < rho; ++i) {
         T H1_r = e.w;
-        auto u_walk = sim_random_walk(G, e.u, in_C);
-        auto v_walk = sim_random_walk(G, e.v, in_C);
+        bool dummy;
+        size_t u_walk_last; T u_walk_dist;
+        size_t v_walk_last; T v_walk_dist;
+        std::tie(dummy, u_walk_last, u_walk_dist) = sim_random_walk(G, e.u, in_C);
+        std::tie(dummy, v_walk_last, v_walk_dist) = sim_random_walk(G, e.v, in_C);
 
-        // compute total resistance
-        for (auto &e : u_walk) {
-          H1_r += T(1) / e.second;
-        }
-        for (auto &e : v_walk) {
-          H1_r += T(1) / e.second;
-        }
+        H1_r += u_walk_dist;
+        H1_r += v_walk_dist;
 
-        size_t nu = compression_map[u_walk.back().first];
-        size_t nv = compression_map[v_walk.back().first];
-        T nw = 1 / H1_r;
+        size_t nu = compression_map[u_walk_last];
+        size_t nv = compression_map[v_walk_last];
+        T nw = T(1) / H1_r;
         H1.add_edge(nu, nv, nw);
         H1.add_edge(nv, nu, nw);
       }
@@ -152,7 +180,7 @@ namespace solve_sim_walk {
       T H2_b = T(0);
       for (size_t f : F) {
         // walk 1 / rho fraction into C
-        size_t dest = compression_map[sim_random_walk(G, f, in_C).back().first];
+        size_t dest = compression_map[std::get<1>(sim_random_walk(G, f, in_C))];
         C_b[dest] += b[dest] / rho;
       }
     }
@@ -162,6 +190,14 @@ namespace solve_sim_walk {
     for (size_t i = 0; i < C.size(); ++i) {
       solved_x[C[i]] = solved_C_x[i];
     }
+    // compute the isolated ones
+    for (size_t i : I) {
+      for (auto e : G.neighbours(i)) {
+        size_t v = e.first;
+        T w = e.second;
+        solved_x[i] += w * b[v];
+      }
+    }
     // solve the remainder
     std::vector<T> F_b(F.size());
     Graph<T> H2;
@@ -170,7 +206,7 @@ namespace solve_sim_walk {
         size_t v = e.first;
         T w = e.second;
         if (in_C[v]) {
-          F_b[compression_map[f]] += v * b[v];
+          F_b[compression_map[f]] += w * b[v];
         } else {
           H2.add_edge(compression_map[f], compression_map[v], w);
         }
@@ -184,7 +220,8 @@ namespace solve_sim_walk {
   }
 
   template<typename T>
-  std::vector<T> solve_gaussian(size_t n, const Graph<T> &G, const std::vector<T> &b, const T &eps) {
+  std::vector<T> solve_gaussian(size_t n, const Graph<T> &G,
+      const std::vector<T> &b, const T &eps) {
     std::vector<std::vector<T>> L(n);
     std::vector<T> nb(b);
     for (auto & v : L) {

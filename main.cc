@@ -4,7 +4,7 @@
 #include "graph.h"
 #include "solve_sim_walk.h"
 
-static const double EPS = 1e-6;
+static const double EPS = 1e-2;
 
 int main() {
   std::cin.tie(0)->sync_with_stdio(0);
@@ -16,8 +16,8 @@ int main() {
     size_t u, v;
     double w;
     std::cin >> u >> v >> w;
-    G.add_edge(u, v, w);
-    G.add_edge(v, u, w);
+    G.add_edge(u - 1, v - 1, w);
+    G.add_edge(v - 1, u - 1, w);
   }
   for (size_t i = 0; i < n; ++i) {
     std::cin >> b[i];
