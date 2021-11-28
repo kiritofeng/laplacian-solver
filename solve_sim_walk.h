@@ -25,6 +25,7 @@ namespace solve_sim_walk {
   const size_t RANDOM_WALK_ATTEMPTS = 10;
   const size_t RANDOM_WALK_ATTEMPT_LENGTH = 30;
   const double RHO_ADJUSTMENT_FACTOR = 0.1;
+  const double ITERATIVE_ADJUSTMENT_FACTOR = 0.001;
 
   template<typename T>
   std::tuple<bool, size_t, T> sim_random_walk(
@@ -90,7 +91,7 @@ namespace solve_sim_walk {
       }
       std::vector<T> x_delta = solve(n, G, x_diff, eps, 1);
       for (size_t j = 0; j < n; ++j) {
-        x[j] += x_delta[j];
+        x[j] += T(ITERATIVE_ADJUSTMENT_FACTOR) * x_delta[j];
       }
     }
     return x;
