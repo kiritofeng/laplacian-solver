@@ -121,10 +121,29 @@ namespace solve_sim_walk {
   std::vector<size_t> sample(size_t n, size_t k) {
     static std::mt19937 gen{0xdeadbeef};
     std::vector<size_t> vals(n);
-    for (size_t i = 0;i < n; ++i) {
+    for (size_t i = 0; i < n; ++i) {
       vals[i] = i;
     }
     std::shuffle(vals.begin(), vals.end(), gen);
+    return std::vector<size_t>(vals.begin(), vals.begin() + k);
+  }
+
+  template<typename T>
+  std::vector<size_t> get_largest_degree(size_t n, const Graph<T> &G, size_t k) {
+    std::vector<size_t> vals(n);
+    for (size_t i = 0; i < n; ++i) {
+      vals[i] = i;
+    }
+    std::sort(vals.begin(), vals.end(), [=](size_t a, size_t b) {
+        return G.deg(a) > G.deg(b);
+    });
+    for (size_t i = 0; i < vals.size(); ++i) {
+      if (i < k) {
+        std::cerr << "Keeping vertex of degree " << G.deg(vals[i]) << std::endl;
+      } else {
+        std::cerr << "Eliminating vertex of degree " << G.deg(vals[i]) << std::endl;
+      }
+    }
     return std::vector<size_t>(vals.begin(), vals.begin() + k);
   }
 
@@ -136,8 +155,8 @@ namespace solve_sim_walk {
     Graph<T> H1;
     std::vector<T> b2;
     std::vector<bool> in_C(n, false);
-    // let C be a random sample of 10% of vertices
-    std::vector<size_t> C = sample(n, n / 10);
+    // let C be 10% of vertices with largest degree
+    std::vector<size_t> C = get_largest_degree(n, G, n / 10);
     for (size_t c : C) {
       in_C[c] = 1;
     }
