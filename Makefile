@@ -16,10 +16,11 @@ CXXFLAGS += -O2
 endif
 
 
-main:
+%: %_driver.cc
 	mkdir -p bin
-	$(CXX) $(CXXFLAGS) -o bin/main main.cc
+	$(CXX) $(CXXFLAGS) -o bin/$@ $<
 
+.PHONY: clean
 clean:
 	rm -rf bin/
 

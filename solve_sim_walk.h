@@ -2,9 +2,9 @@
 #define _SOLVE_SIM_WALK_H_
 
 #include <algorithm>
-#include <cassert>
 #include <climits>
 #include <iostream>
+#include <queue>
 #include <random>
 #include <set>
 #include <stdexcept>
@@ -13,26 +13,31 @@
 #include <vector>
 
 #include "graph.h"
+#include "solve_min_deg_elim.h"
 
 /**
- * Laplacian solver using simulated walks, removing half the vertices at a time.
+ * Laplacian solver using simulated walks, removing 1/10 the vertices each time
  *
  * Probably very very slow
  */
 
 namespace solve_sim_walk {
-  const size_t GE_LIMIT = 1500;
-  const size_t RANDOM_WALK_ATTEMPTS = 10;
-  const size_t RANDOM_WALK_ATTEMPT_LENGTH = 30;
-  const double RHO_ADJUSTMENT_FACTOR = 0.1;
+  const size_t GE_LIMIT = 1e4;
+  const unsigned RANDOM_WALK_ATTEMPTS = 10;
+  const unsigned RANDOM_WALK_ATTEMPT_LENGTH = 30;
+  const double RHO_ADJUSTMENT_FACTOR = 0.01;
   const double ITERATIVE_ADJUSTMENT_FACTOR = 0.001;
 
   template<typename T>
   std::tuple<bool, size_t, T> sim_random_walk(
-      const Graph<T> &G, size_t u, std::vector<bool> &C, size_t max_len=UINT_MAX);
+      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned max_len=UINT_MAX);
 
   template<typename T>
-  std::vector<T> solve_iterative(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, size_t iterations);
+  std::vector<std::tuple<bool, size_t, T>> sim_random_walks(
+      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned walks, unsigned max_len=UINT_MAX);
+
+  template<typename T>
+  std::vector<T> solve_iterative(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, unsigned iterations);
 
   template<typename T>
   std::vector<T> solve(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, bool normalize=true);
@@ -46,10 +51,9 @@ namespace solve_sim_walk {
 
   template<typename T>
   std::tuple<bool, size_t, T> sim_random_walk(
-      const Graph<T> &G, size_t u, std::vector<bool> &C, size_t max_len) {
+      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned max_len) {
     static std::mt19937 gen{0xdeadbeef};
 
-    assert(G.deg(u) > 0);
     T dist = T(0);
     size_t len = 0;
     while (!C[u] && len < max_len) {
@@ -70,8 +74,62 @@ namespace solve_sim_walk {
   }
 
   template<typename T>
+  std::vector<std::tuple<bool, size_t, T>> sim_random_walks(
+      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned walks, unsigned max_len) {
+    static std::mt19937 gen{0xdeadbeef};
+
+    // cache degrees; lookup is surprisingly expensive
+    std::vector<size_t> deg(n);
+    for (size_t i = 0; i < n; ++i) {
+      deg[i] = G.deg(i);
+    }
+    std::vector<std::tuple<bool, size_t, T>> ret;
+    // cur, cnt, len, dist
+    std::queue<std::tuple<size_t, unsigned, unsigned, T>> queue;
+    queue.emplace(u, walks, 0, 0);
+    while (!queue.empty()) {
+      size_t cur;
+      unsigned long cnt, len;
+      T dist;
+      std::tie(cur, cnt, len, dist) = queue.front();
+      queue.pop();
+      if (C[cur] || len >= max_len) {
+        for (unsigned i = 0; i < cnt; ++i) {
+          ret.emplace_back(C[cur], cur, dist);
+        }
+        continue;
+      }
+      std::vector<size_t> dest_idx;
+      for (size_t i = 0; i < cnt; ++i) {
+        size_t idx = std::uniform_int_distribution<size_t>(0, deg[cur] - 1)(gen);
+        dest_idx.push_back(idx);
+      }
+
+      std::sort(dest_idx.begin(), dest_idx.end());
+      const size_t deg_cur = deg[cur];
+      size_t last = deg_cur; // sentinel value
+      unsigned long last_cnt = 0;
+      for (size_t idx : dest_idx) {
+        if (idx != last) {
+          if (last != deg_cur) {
+            size_t v; T weight;
+            std::tie(v, weight) = *G.neighbours(cur).find_by_order(last);
+            queue.emplace(v, last_cnt, len + 1, dist + T(1) / weight);
+          }
+          last = idx;
+          last_cnt = 0;
+        }
+      }
+      size_t v; T weight;
+      std::tie(v, weight) = *G.neighbours(cur).find_by_order(last);
+      queue.emplace(v, last_cnt, len + 1, dist + weight);
+    }
+    return ret;
+  }
+
+  template<typename T>
   std::vector<T> solve_iterative(size_t n, const Graph<T> &G, std::vector<T> &b,
-      const T &eps, size_t iterations) {
+      const T &eps, unsigned iterations) {
     std::vector<T> x = solve(n, G, b, eps, 1);
     for (size_t i = 0; i < iterations; ++i) {
       std::vector<T> x_diff(n);
@@ -101,7 +159,7 @@ namespace solve_sim_walk {
   std::vector<T> solve(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, bool normalize) {
     std::vector<T> x;
     if (n < GE_LIMIT) {
-      x = solve_gaussian(n, G, b, eps);
+      x = solve_min_deg_elim::solve_graphs(n, G, b, eps);
     } else {
       x = solve_vertex_elimination(n, G, b, eps);
     }
@@ -130,20 +188,14 @@ namespace solve_sim_walk {
 
   template<typename T>
   std::vector<size_t> get_largest_degree(size_t n, const Graph<T> &G, size_t k) {
-    std::vector<size_t> vals(n);
+    std::vector<size_t> vals(n), deg(n);
     for (size_t i = 0; i < n; ++i) {
       vals[i] = i;
+      deg[i] = G.deg(i);
     }
     std::sort(vals.begin(), vals.end(), [=](size_t a, size_t b) {
-        return G.deg(a) > G.deg(b);
+        return deg[a] > deg[b];
     });
-    for (size_t i = 0; i < vals.size(); ++i) {
-      if (i < k) {
-        std::cerr << "Keeping vertex of degree " << G.deg(vals[i]) << std::endl;
-      } else {
-        std::cerr << "Eliminating vertex of degree " << G.deg(vals[i]) << std::endl;
-      }
-    }
     return std::vector<size_t>(vals.begin(), vals.begin() + k);
   }
 
@@ -151,7 +203,7 @@ namespace solve_sim_walk {
   std::vector<T> solve_vertex_elimination(
       size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps) {
 
-    T rho = RHO_ADJUSTMENT_FACTOR / (eps * eps);
+    unsigned rho = std::round(RHO_ADJUSTMENT_FACTOR / (eps * eps)) + 1;
     Graph<T> H1;
     std::vector<T> b2;
     std::vector<bool> in_C(n, false);
@@ -164,13 +216,13 @@ namespace solve_sim_walk {
       if (in_C[e.u]) {
         continue;
       }
-      size_t cnt = 0;
-      for (size_t i = 0; i < RANDOM_WALK_ATTEMPTS; ++i) {
-        if (!std::get<0>(sim_random_walk(G, e.u, in_C, RANDOM_WALK_ATTEMPT_LENGTH))) {
-          cnt += 1;
+      unsigned cnt = 0;
+      for (auto a : sim_random_walks(n, G, e.u, in_C, RANDOM_WALK_ATTEMPTS, RANDOM_WALK_ATTEMPT_LENGTH)) {
+        if (!std::get<0>(a)) {
+          ++cnt;
         }
       }
-      if (cnt / RANDOM_WALK_ATTEMPTS >= 0.9) {
+      if (cnt >= 0.5 * RANDOM_WALK_ATTEMPTS) {
         in_C[e.u] = true;
         C.push_back(e.u);
       }
@@ -192,35 +244,43 @@ namespace solve_sim_walk {
     for (size_t i = 0; i < F.size(); ++i) {
       compression_map[F[i]] = i;
     }
+    std::vector<std::map<size_t, T>> adj(n);
     for (auto e : G.edges()) {
       if (e.u > e.v) { // assume undirected for now
         continue;
       }
-      for (size_t i = 0; i < rho; ++i) {
-        T H1_r = e.w;
-        bool dummy;
+      auto u_walks = sim_random_walks(n, G, e.u, in_C, rho);
+      auto v_walks = sim_random_walks(n, G, e.v, in_C, rho);
+      for (size_t i = 0; i < u_walks.size(); ++i) {
+        T H1_r = T(1) / e.w;
+        bool _;
         size_t u_walk_last; T u_walk_dist;
         size_t v_walk_last; T v_walk_dist;
-        std::tie(dummy, u_walk_last, u_walk_dist) = sim_random_walk(G, e.u, in_C);
-        std::tie(dummy, v_walk_last, v_walk_dist) = sim_random_walk(G, e.v, in_C);
+        std::tie(_, u_walk_last, u_walk_dist) = u_walks[i];
+        std::tie(_, v_walk_last, v_walk_dist) = v_walks[i];
 
         H1_r += u_walk_dist;
         H1_r += v_walk_dist;
 
         size_t nu = compression_map[u_walk_last];
         size_t nv = compression_map[v_walk_last];
-        T nw = T(1) / H1_r;
-        H1.add_edge(nu, nv, nw);
-        H1.add_edge(nv, nu, nw);
+        assert(std::binary_search(C.begin(), C.end(), u_walk_last));
+        assert(std::binary_search(C.begin(), C.end(), v_walk_last));
+        T nw = T(rho) / H1_r;
+        adj[nu][nv] += nw;
+        adj[nv][nu] += nw;
+      }
+    }
+    for (size_t u = 0; u < n; ++u) {
+      for (auto e : adj[u]) {
+        H1.add_edge(u, e.first, T(1) / e.second);
       }
     }
     // populate nb for C
     std::vector<T> C_b(C.size());
-    for (size_t i = 0; i < rho; ++i) {
-      T H2_b = T(0);
-      for (size_t f : F) {
-        // walk 1 / rho fraction into C
-        size_t dest = compression_map[std::get<1>(sim_random_walk(G, f, in_C))];
+    for (size_t f : F) {
+      for (auto a : sim_random_walks(n, G, f, in_C, rho)) {
+        size_t dest = std::get<1>(a);
         C_b[dest] += b[dest] / rho;
       }
     }
@@ -233,8 +293,8 @@ namespace solve_sim_walk {
     // solve the remainder
     std::vector<T> F_b(F.size());
     for (size_t f : F) {
-      for (size_t i = 0; i < rho; ++i) {
-        solved_x[f] += solved_x[std::get<1>(sim_random_walk(G, f, in_C))] / rho;
+      for (auto a : sim_random_walks(n, G, f, in_C, rho)) {
+        solved_x[f] += solved_x[std::get<1>(a)] / rho;
       }
       T weighted_degree(0);
       for (auto e : G.neighbours(f)) {

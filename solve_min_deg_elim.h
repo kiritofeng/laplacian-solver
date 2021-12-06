@@ -10,6 +10,12 @@
 
 #include "graph.h"
 
+/**
+ * Laplacian solver using Gaussian Elimination, with min. degree heuristic
+ *
+ * Slows down significantly for n > 1e4
+ */
+
 namespace solve_min_deg_elim {
   template<typename T>
   void normalize(size_t n, std::vector<T> &x) {
@@ -23,6 +29,13 @@ namespace solve_min_deg_elim {
         x[u] -= avg;
       }
     }
+  }
+
+  template<typename T>
+  std::vector<T> solve(size_t n, const Graph<T> &G, const std::vector<T> &b, const T &eps) {
+    std::vector<T> x = solve_graphs(n, G, b, eps);
+    normalize(n, x);
+    return x;
   }
 
   template<typename T>
@@ -88,7 +101,6 @@ namespace solve_min_deg_elim {
     if (last != n + 1) {
       nb[last] /= weighted_deg[last];
     }
-    normalize(n, nb);
     return nb;
   }
 };

@@ -5,7 +5,7 @@
 #include "solve_sim_walk.h"
 
 static const double EPS = 1e-2;
-static const size_t ITERATIONS = 10;
+static const unsigned ITERATIONS = 1;
 
 int main() {
   std::cin.tie(0)->sync_with_stdio(0);
