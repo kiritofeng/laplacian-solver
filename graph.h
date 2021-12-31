@@ -13,8 +13,8 @@
 template<typename T>
 class Graph {
 public:
-  using sparse_vector = typename __gnu_pbds::tree<size_t, T, std::less<size_t>, __gnu_pbds::rb_tree_tag, __gnu_pbds::tree_order_statistics_node_update>;
-  using const_sparse_vector = const __gnu_pbds::tree<size_t, T, std::less<size_t>, __gnu_pbds::rb_tree_tag, __gnu_pbds::tree_order_statistics_node_update>;
+  using sparse_vector = typename std::map<size_t, T>;
+  using const_sparse_vector = const std::map<size_t, T>;
   using adj_matrix = typename std::map<size_t, sparse_vector>;
 private:
   adj_matrix adj;

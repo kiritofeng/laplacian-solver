@@ -3,7 +3,8 @@
 
 #include <algorithm>
 #include <climits>
-#include <iostream>
+#include <cmath>
+#include <map>
 #include <queue>
 #include <random>
 #include <set>
@@ -29,8 +30,11 @@ namespace solve_sim_walk {
   const double ITERATIVE_ADJUSTMENT_FACTOR = 0.001;
 
   template<typename T>
+  using adj_list = std::vector<std::vector<std::pair<size_t, T>>>;
+
+  template<typename T>
   std::tuple<bool, size_t, T> sim_random_walk(
-      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned max_len=UINT_MAX);
+      size_t, const adj_list<T>&, size_t, const std::vector<bool>&, unsigned=UINT_MAX);
 
   template<typename T>
   std::vector<std::tuple<bool, size_t, T>> sim_random_walks(
@@ -50,17 +54,33 @@ namespace solve_sim_walk {
   std::vector<T> solve_gaussian(size_t n, const Graph<T> &G, const std::vector<T> &b, const T &eps);
 
   template<typename T>
+  std::vector<std::vector<std::pair<size_t, T>>> graph_to_adj_list(const Graph<T> &G);
+
+  template<typename T>
+  adj_list<T> graph_to_adj_list(size_t n, const Graph<T> &G) {
+    adj_list<T> adj(n);
+    for (size_t i = 0; i < n; ++i) {
+      if (G.deg(i) > 0) {
+        for (auto e : G.neighbours(i)) {
+          adj[i].push_back(e);
+        }
+      }
+    }
+    return adj;
+  }
+
+  template<typename T>
   std::tuple<bool, size_t, T> sim_random_walk(
-      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned max_len) {
+      size_t n, const adj_list<T> &adj, size_t u, const std::vector<bool> &C, unsigned max_len) {
     static std::mt19937 gen{0xdeadbeef};
 
     T dist = T(0);
     size_t len = 0;
     while (!C[u] && len < max_len) {
-      size_t idx = std::uniform_int_distribution<size_t>(0, G.deg(u) - 1)(gen);
+      size_t idx = std::uniform_int_distribution<size_t>(0, adj[u].size() - 1)(gen);
 
       T weight;
-      std::tie(u, weight) = *G.neighbours(u).find_by_order(idx);
+      std::tie(u, weight) = adj[u][idx];
 
       dist += 1 / weight;
       len += 1;
@@ -75,14 +95,15 @@ namespace solve_sim_walk {
 
   template<typename T>
   std::vector<std::tuple<bool, size_t, T>> sim_random_walks(
-      size_t n, const Graph<T> &G, size_t u, const std::vector<bool> &C, unsigned walks, unsigned max_len) {
+      size_t n, const adj_list<T> &adj, size_t u, const std::vector<bool> &C, unsigned walks, unsigned max_len) {
     static std::mt19937 gen{0xdeadbeef};
 
     // cache degrees; lookup is surprisingly expensive
     std::vector<size_t> deg(n);
     for (size_t i = 0; i < n; ++i) {
-      deg[i] = G.deg(i);
+      deg[i] = adj[i].size();
     }
+
     std::vector<std::tuple<bool, size_t, T>> ret;
     // cur, cnt, len, dist
     std::queue<std::tuple<size_t, unsigned, unsigned, T>> queue;
@@ -113,7 +134,7 @@ namespace solve_sim_walk {
         if (idx != last) {
           if (last != deg_cur) {
             size_t v; T weight;
-            std::tie(v, weight) = *G.neighbours(cur).find_by_order(last);
+            std::tie(v, weight) = adj[cur][last];
             queue.emplace(v, last_cnt, len + 1, dist + T(1) / weight);
           }
           last = idx;
@@ -121,7 +142,7 @@ namespace solve_sim_walk {
         }
       }
       size_t v; T weight;
-      std::tie(v, weight) = *G.neighbours(cur).find_by_order(last);
+      std::tie(v, weight) = adj[cur][last];
       queue.emplace(v, last_cnt, len + 1, dist + weight);
     }
     return ret;
@@ -158,7 +179,7 @@ namespace solve_sim_walk {
   template<typename T>
   std::vector<T> solve(size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps, bool normalize) {
     std::vector<T> x;
-    if (n < GE_LIMIT) {
+    if (n <= GE_LIMIT) {
       x = solve_min_deg_elim::solve_graphs(n, G, b, eps);
     } else {
       x = solve_vertex_elimination(n, G, b, eps);
@@ -203,8 +224,9 @@ namespace solve_sim_walk {
   std::vector<T> solve_vertex_elimination(
       size_t n, const Graph<T> &G, std::vector<T> &b, const T &eps) {
 
-    unsigned rho = std::round(RHO_ADJUSTMENT_FACTOR / (eps * eps)) + 1;
-    Graph<T> H1;
+    const unsigned rho = std::round(RHO_ADJUSTMENT_FACTOR / (eps * eps)) + 1;
+
+    Graph<T> H;
     std::vector<T> b2;
     std::vector<bool> in_C(n, false);
     // let C be 10% of vertices with largest degree
@@ -212,12 +234,13 @@ namespace solve_sim_walk {
     for (size_t c : C) {
       in_C[c] = 1;
     }
+    adj_list<T> adj_list = graph_to_adj_list(G);
     for (auto e : G.edges()) {
       if (in_C[e.u]) {
         continue;
       }
       unsigned cnt = 0;
-      for (auto a : sim_random_walks(n, G, e.u, in_C, RANDOM_WALK_ATTEMPTS, RANDOM_WALK_ATTEMPT_LENGTH)) {
+      for (auto a : sim_random_walks(n, adj_list, e.u, in_C, RANDOM_WALK_ATTEMPTS, RANDOM_WALK_ATTEMPT_LENGTH)) {
         if (!std::get<0>(a)) {
           ++cnt;
         }
@@ -244,36 +267,36 @@ namespace solve_sim_walk {
     for (size_t i = 0; i < F.size(); ++i) {
       compression_map[F[i]] = i;
     }
-    std::vector<std::map<size_t, T>> adj(n);
+    std::vector<std::map<size_t, T>> H_adj(n);
     for (auto e : G.edges()) {
       if (e.u > e.v) { // assume undirected for now
         continue;
       }
-      auto u_walks = sim_random_walks(n, G, e.u, in_C, rho);
-      auto v_walks = sim_random_walks(n, G, e.v, in_C, rho);
+      auto u_walks = sim_random_walks(n, adj_list, e.u, in_C, rho);
+      auto v_walks = sim_random_walks(n, adj_list, e.v, in_C, rho);
       for (size_t i = 0; i < u_walks.size(); ++i) {
-        T H1_r = T(1) / e.w;
+        T H_r = T(1) / e.w;
         bool _;
         size_t u_walk_last; T u_walk_dist;
         size_t v_walk_last; T v_walk_dist;
         std::tie(_, u_walk_last, u_walk_dist) = u_walks[i];
         std::tie(_, v_walk_last, v_walk_dist) = v_walks[i];
 
-        H1_r += u_walk_dist;
-        H1_r += v_walk_dist;
+        H_r += u_walk_dist;
+        H_r += v_walk_dist;
 
         size_t nu = compression_map[u_walk_last];
         size_t nv = compression_map[v_walk_last];
         assert(std::binary_search(C.begin(), C.end(), u_walk_last));
         assert(std::binary_search(C.begin(), C.end(), v_walk_last));
-        T nw = T(rho) / H1_r;
-        adj[nu][nv] += nw;
-        adj[nv][nu] += nw;
+        T nw = T(rho) / H_r;
+        H_adj[nu][nv] += nw;
+        H_adj[nv][nu] += nw;
       }
     }
     for (size_t u = 0; u < n; ++u) {
-      for (auto e : adj[u]) {
-        H1.add_edge(u, e.first, T(1) / e.second);
+      for (auto e : H_adj[u]) {
+        H.add_edge(u, e.first, T(1) / e.second);
       }
     }
     // populate nb for C
@@ -286,14 +309,14 @@ namespace solve_sim_walk {
     }
     std::vector<T> solved_x(n);
     // solve C recursively
-    auto solved_C_x = solve(C.size(), H1, C_b, eps, false);
+    auto solved_C_x = solve(C.size(), H, C_b, eps, false);
     for (size_t i = 0; i < C.size(); ++i) {
       solved_x[C[i]] = solved_C_x[i];
     }
     // solve the remainder
     std::vector<T> F_b(F.size());
     for (size_t f : F) {
-      for (auto a : sim_random_walks(n, G, f, in_C, rho)) {
+      for (auto a : sim_random_walks(n, adj_list, f, in_C, rho)) {
         solved_x[f] += solved_x[std::get<1>(a)] / rho;
       }
       T weighted_degree(0);
